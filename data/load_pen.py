@@ -68,9 +68,9 @@ def ptb_raw_data(data_path=None):
     Reads PTB text files, converts strings to integer ids,
     and performs mini-batching of the inputs.
     The PTB dataset comes from Tomas Mikolov's webpage:
-    http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz
+    http://www.fit.vutbr.cz/~imikolov/rnnlm/ptb.tgz
     Args:
-      data_path: string path to the directory where simple-examples.tgz has
+      data_path: string path to the directory where ptb.tgz has
         been extracted.
     Returns:
       tuple (train_data, valid_data, test_data, vocabulary)
@@ -136,5 +136,5 @@ class Dataset(object):
         return ptb_producer(self.data[scope], self.batch_size, self.num_steps)
 
 if __name__ == '__main__':
-    data = ptb_raw_data("simple-examples/data")
+    data = ptb_raw_data("ptb/data")
     print(data['val'].size/20/40)

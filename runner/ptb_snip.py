@@ -23,7 +23,7 @@ class PTBRunner(BaseRunner):
 
         self._npr = np.random.RandomState(params.seed)
         self.Mask = {}
-        self.Data = Dataset(params, "../data/simple-examples/data")
+        self.Data = Dataset(params, "../data/ptb/data")
         self.vocab_size = self.Data.vocab_size
         self._build_snip()
 
