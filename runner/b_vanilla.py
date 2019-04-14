@@ -40,23 +40,32 @@ class VanillaRunner(BillionRunner):
                 tf.int32, [None, None]
             )
 
-            self.Placeholder['Input_Logits'] = tf.placeholder(tf.float32,
-                [None, None, self.vocab_size])
-
             self.Tensor['Loss_Function'] = \
-                Seq2SeqLoss
+                SampleSoftmaxSequenceLoss
 
             self.Output['Optimizer'] = get_optimizer(
                 self.params, self.Placeholder['Learning_Rate']
             )
 
             self.Output['Small_Pred'] = self.Model['Small'].run(
-                self.Placeholder['Input_Feature']
+                self.Placeholder['Input_Feature'], use_last=False
             )
+            weight = self.Model['Small'].model.Network['Dummy'][-1].weight
+            bias = self.Model['Small'].model.Network['Dummy'][-1].b
+
+            self.Placeholder['Input_Logits'] = tf.placeholder(tf.float32,
+                [None, None, weight.get_shape().as_list()[0]])
+
+            self.loss_params = {
+                'weight': tf.transpose(weight), 'bias': bias,
+                'num_sample': self.params.num_sample,
+                'vocab_size': self.vocab_size
+            }
 
             self.Output['Small_Loss'] = tf.reduce_mean(
                 self.Tensor['Loss_Function'](
-                    self.Output['Small_Pred'], self.Placeholder['Input_Label']
+                    self.Output['Small_Pred'], self.Placeholder['Input_Label'],
+                    **self.loss_params
                 )
             )
 

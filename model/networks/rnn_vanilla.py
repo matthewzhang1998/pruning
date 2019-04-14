@@ -116,9 +116,12 @@ class RNNModel(BaseModel):
         ))
         self.Network['Type'].append('mlp')
 
-    def __call__(self, input):
+    def __call__(self, input, use_last=True):
         self.Tensor['Intermediate'] = [None for _ in self.Network['Dummy']]
         for i, network in enumerate(self.Network['Dummy']):
+            if not use_last and i == len(self.Network['Dummy']) - 1:
+                break
+
             if self.Network['Type'][i] == 'rnn':
                 self.Tensor['Intermediate'][i] = network(input)[0] # get outputs, not hidden state
 
@@ -126,4 +129,8 @@ class RNNModel(BaseModel):
                 self.Tensor['Intermediate'][i] = network(input)
 
             input = self.Tensor['Intermediate'][i]
-        return self.Tensor['Intermediate'][-1]
+
+        if use_last:
+            return self.Tensor['Intermediate'][-1]
+        else:
+            return self.Tensor['Intermediate'][-2]

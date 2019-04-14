@@ -40,23 +40,25 @@ class Unit(object):
             self.model.build_sparse(sparse_list, ii, use_dense)
             self.initialize_op = self.model.initialize_op
 
-    def run(self, features):
+    def run(self, features, use_last=True):
         with tf.variable_scope(self.scope+'/'):
-            self.Tensor['Predictions'] = self.model(features)
+            self.Tensor['Predictions'] = self.model(features, use_last)
 
             if 'Weights' in self.model.Tensor:
                 self.Tensor['Weights'] = self.model.Tensor['Weights']
 
             return self.Tensor['Predictions']
 
-    def unit(self, minibatch, loss_fnc, ii):
+
+    def unit(self, minibatch, loss_fnc, ii, use_last=True, loss_params={}):
         with tf.variable_scope(self.scope+'/'):
             self.Tensor['Unit_Pred'] = self.model.unit(
-                minibatch['Features'], ii
+                minibatch['Features'], ii, use_last
             )
 
             self.Tensor['Unit_Loss'] = tf.reduce_mean(loss_fnc(
-                self.Tensor['Unit_Pred'], minibatch['Labels']
+                self.Tensor['Unit_Pred'], minibatch['Labels'],
+                **loss_params
             ))
 
             # one layer case

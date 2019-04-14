@@ -2,10 +2,10 @@ import init_path
 from config.base_config import *
 from config.rnn_config import *
 
-import runner.1b_vanilla
-import runner.1b_sparse
-import runner.ptb_drw
-import runner.ptb_snip
+import runner.b_vanilla
+import runner.b_sparse
+import runner.b_regress
+
 
 def main():
     import logging
@@ -14,14 +14,14 @@ def main():
     parser = get_base_parser()
     parser = rnn_parser(parser)
     params = make_parser(parser)
-    if params.exp_id == 'sparse':
-        Runner = runner.ptb_sparse.PTBRunner('ptb', params)
-    elif params.exp_id == 'vanilla':
-        Runner = runner.ptb_vanilla.PTBRunner('ptb', params)
-    elif params.exp_id == 'snip':
-        Runner = runner.ptb_snip.PTBRunner('ptb', params)
-    elif params.exp_id == 'drw':
-        Runner = runner.ptb_drw.PTBRunner('ptb', params)
+
+    if params.exp_id == 'vanilla':
+        Runner = runner.b_vanilla.VanillaRunner('1b/vanilla', params)
+    elif params.exp_id == 'sparse':
+        Runner = runner.b_sparse.SparseRunner('1b/sparse', params)
+    elif params.exp_id == 'regress':
+        Runner = runner.b_regress.RegressionRunner("1b/regress", params)
+        
     Runner.run()
 
 if __name__ == '__main__':

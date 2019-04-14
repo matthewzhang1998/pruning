@@ -27,7 +27,7 @@ class Vanilla(object):
         self.Info = {}
         self.Op = {}
 
-    def run(self, features):
+    def run(self, features, use_last=True):
         with tf.variable_scope(self.scope+'/'):
-            self.Tensor['Predictions'] = self.model(features)
+            self.Tensor['Predictions'] = self.model(features, use_last)
             return self.Tensor['Predictions']

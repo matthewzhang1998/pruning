@@ -16,7 +16,8 @@ class DenseFullyConnected(object):
                 self.weight = tf.Variable(weight, dtype=tf.float32)
             else:
                 self.weight = tf.get_variable('w', [input_depth, hidden_size], dtype=tf.float32)
-            self._b = tf.Variable(tf.zeros(shape=[hidden_size], dtype=tf.float32))
+
+            self.b = tf.Variable(tf.zeros(shape=[hidden_size], dtype=tf.float32))
         self._train = train
 
         self._activation_type = activation_type
@@ -29,7 +30,7 @@ class DenseFullyConnected(object):
             tf.concat([[-1], [self.input_depth]], axis=0)
         )
         with tf.variable_scope(self._scope):
-            res = tf.matmul(flat_input, self.weight) + self._b
+            res = tf.matmul(flat_input, self.weight) + self.b
 
             if self._activation_type is not None:
                 act_func = \
