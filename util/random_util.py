@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Aug 12 16:09:41 2018
-
-@author: matthewszhang
-"""
-import numpy as np
-import tensorflow as tf
-
-# prevent nans
 EPS = 1e-8
 
 def gaussian_noise_layer(input_layer, std=0.1):

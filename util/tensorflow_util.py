@@ -6,9 +6,7 @@ ABS_PATH = os.path.dirname(os.path.realpath(__file__))
 print(ABS_PATH)
 
 # enter from main
-sparse_grad_module = tf.load_op_library(
-    '/h/mzhang/tensorflow_eff_grad/tensorflow/tensorflow/core/user_ops/sparse_tensor_dense_matmul_sorted_grad_op.so')
-
+sparse_grad_module = tf.load_op_library(None)
 sparse_grad = sparse_grad_module.sparse_tensor_dense_mat_mul_sorted_grad
 
 from tensorflow.python.ops.sparse_ops import _convert_to_sparse_tensor

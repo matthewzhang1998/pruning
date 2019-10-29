@@ -5,6 +5,33 @@ import numpy as np
 
 from util import norm_util
 
+_INIT = 0.1
+
+def static_rnn(cell, seq, hidden_states, dtype=tf.float32, return_rnn=False):
+    if return_rnn:
+        output_list, hidden_list, hs_, ns_ = [],[],[],[]
+    else:
+        output_list, hidden_list = [], []
+    if hidden_states is None:
+        hidden_states = cell.zero_state(tf.shape(seq[0])[0], dtype=dtype)
+
+    for i in range(len(seq)):
+        if return_rnn:
+            output, hidden_states, h, n = cell(seq[i], hidden_states, return_prev=True)
+            hs_.append(h)
+            ns_.append(n)
+        else:
+            output, hidden_states = cell(seq[i], hidden_states)
+
+        output_list.append(output)
+        hidden_list.append(hidden_states)
+
+    if return_rnn:
+        return output_list, hidden_list, hs_, ns_
+    else:
+        return output_list, hidden_list
+
+
 def split_indices(sparse_list, split, num_split, axis):
     vals, inds = sparse_list
     return_arr = []
@@ -73,7 +100,6 @@ def get_initializer(shape, init_method, init_para, seed):
                 size=shape)
 
     return out
-
 
 def get_random_sparse_matrix(scope, shape, dtype=None, initializer=None, sparsity=0.99, npr=None, seed=None):
     seed = seed or 12345
@@ -171,31 +197,72 @@ def sparse_matmul(args, sparse_matrix, scope=None, use_sparse_mul=True):
 def get_dummy_rnn_cell(rnn_cell_type):
     cell_args = {}
     if rnn_cell_type == 'basic':
-        raise NotImplementedError
+        cell_type = SparseDummyBasicCell
+        cell_args['state_is_tuple'] = False
+
     elif rnn_cell_type == 'lstm':
         cell_type = SparseDummyLSTMCell
         cell_args['state_is_tuple'] = False
 
+    elif rnn_cell_type == 'gru':
+        cell_type = SparseDummyGRUCell
+        cell_args['state_is_tuple'] = False
+
+    elif rnn_cell_type == 'peephole_lstm':
+        cell_type = SparseDummyLSTMCell
+        cell_args['state_is_tuple'] = False
+        cell_args['peephole'] = True
+
     return cell_type, cell_args
 
-def get_sparse_rnn_cell(rnn_cell_type):
+def get_mask_rnn_cell(rnn_cell_type):
     cell_args = {}
     if rnn_cell_type == 'basic':
-        raise NotImplementedError
+        pass
+
     elif rnn_cell_type == 'lstm':
-        cell_type = SparseLSTMCell
+        cell_type = MaskLSTMCell
+        cell_args['state_is_tuple'] = False
+
+    elif rnn_cell_type == 'peephole_lstm':
+        cell_type = MaskLSTMCell
+        cell_args['state_is_tuple'] = False
+        cell_args['peephole'] = True
+
+    elif rnn_cell_type == 'gru':
+        cell_type = MaskGRUCell
         cell_args['state_is_tuple'] = False
 
     return cell_type, cell_args
 
-class SparseDummyLSTMCell(object):
-    def __init__(self, num_units, input_depth, seed=None,
-                 init_data=None, num_unitwise=None, state_is_tuple=False,
-                 forget_bias=1.0, activation=None, dtype=None):
+
+
+def get_sparse_rnn_cell(rnn_cell_type):
+    cell_args = {}
+    if rnn_cell_type == 'basic':
+        cell_type = SparseBasicCell
+    elif rnn_cell_type == 'lstm':
+        cell_type = SparseLSTMCell
+        cell_args['state_is_tuple'] = False
+    elif rnn_cell_type == 'gru':
+        cell_type = SparseGRUCell
+        cell_args['state_is_tuple'] = False
+    elif rnn_cell_type == 'peephole_lstm':
+        cell_type = SparseLSTMCell
+        cell_args['state_is_tuple'] = False
+        cell_args['peephole'] = True
+
+    return cell_type, cell_args
+
+class SparseDummyBasicCell(object):
+    def __init__(self, num_units, input_depth, seed=None, init_data=None,
+                 num_unitwise=None, state_is_tuple=False, forget_bias=1.0,
+                 activation=None, dtype=None, sample_inds=None):
         self._num_units = num_units
         self._forget_bias = forget_bias
         self._seed = seed
         self.dtype = dtype
+
         if activation:
             self._activation = get_activation_func(activation)
         else:
@@ -205,7 +272,155 @@ class SparseDummyLSTMCell(object):
         self._num_unitwise = num_unitwise if num_unitwise is not None else 1
 
         self._dummy_kernel = tf.placeholder(
-            shape=[input_depth + self._num_units, 4 * self._num_unitwise], dtype=tf.float32
+            shape=[input_depth + self._num_units, self._num_unitwise], dtype=tf.float32
+        )
+        self._dummy_bias = tf.zeros(
+            shape=[self._num_unitwise], dtype=tf.float32
+        )
+        self.roll = tf.placeholder_with_default(
+            tf.zeros([1], dtype=tf.int32), [1]
+        )
+
+        self.output_size = num_units
+        self.state_size = num_units
+        self.sample_inds = sample_inds
+
+    def zero_state(self, batch_size, dtype):
+        return tf.zeros(
+            [batch_size, tf.constant(self.state_size)],
+            dtype=dtype)
+
+    def __call__(self, inputs, state, return_prev = False):
+        m_prev = state
+
+        concat = tf.concat([inputs, m_prev], 1)
+        hs_ = sparse_matmul(concat, self.sample_inds)
+
+        input_size = inputs.get_shape().with_rank(2)[1]
+        if input_size.value is None:
+            raise ValueError("Could not infer input size from inputs.get_shape()[-1]")
+
+        # i = input_gate, j = new_input, f = forget_gate, o = output_gate
+        ht_ = tf.matmul(
+            concat, self._dummy_kernel[:, :self._num_unitwise]) \
+            + self._dummy_bias[:self._num_unitwise]
+
+        h = tf.concat([ht_, hs_], axis=-1)
+
+        h = tf.tanh(tf.roll(h, self.roll, [-1]) + _INIT)
+
+        new_state = h
+
+        if return_prev:
+            return h, new_state, m_prev, h
+        else:
+            return h, new_state
+
+class SparseDummyGRUCell(object):
+    def __init__(self, num_units, input_depth, seed=None, init_data=None,
+                 num_unitwise=None, state_is_tuple=False, forget_bias=1.0,
+                 activation=None, dtype=None, sample_inds=None):
+        self._num_units = num_units
+        self._forget_bias = forget_bias
+        self._seed = seed
+        self.dtype = dtype
+
+        if activation:
+            self._activation = get_activation_func(activation)
+        else:
+            self._activation = tf.tanh
+
+        self._input_size = input_depth
+        self._num_unitwise = num_unitwise if num_unitwise is not None else 1
+
+        self._dummy_kernel = tf.placeholder(
+            shape=[input_depth + self._num_units, 3 * self._num_unitwise], dtype=tf.float32
+        )
+        self._dummy_bias = tf.zeros(
+            shape=[3 * self._num_unitwise], dtype=tf.float32
+        )
+        self.roll = tf.placeholder_with_default(
+            tf.zeros([1], dtype=tf.int32), [1]
+        )
+
+        self.output_size = num_units
+        self.state_size = num_units
+        self.sample_inds = sample_inds
+
+    def zero_state(self, batch_size, dtype):
+        return tf.zeros(
+            [batch_size, tf.constant(self.state_size)],
+            dtype=dtype)
+
+    def __call__(self, inputs, state, return_prev = False):
+        m_prev = state
+
+        assert len(self.sample_inds) == 2
+
+        concat = tf.concat([inputs, m_prev], 1)
+        sample_gate = sparse_matmul(concat, self.sample_inds[0])
+        rs_, zs_ = tf.split(sample_gate, 2, axis=1)
+
+        input_size = inputs.get_shape().with_rank(2)[1]
+        if input_size.value is None:
+            raise ValueError("Could not infer input size from inputs.get_shape()[-1]")
+
+        # i = input_gate, j = new_input, f = forget_gate, o = output_gate
+        rt_ = tf.matmul(
+            concat, self._dummy_kernel[:, :self._num_unitwise]) \
+            + self._dummy_bias[:self._num_unitwise]
+        zt_ = tf.matmul(
+            concat, self._dummy_kernel[:, self._num_unitwise:2*self._num_unitwise]) \
+              + self._dummy_bias[self._num_unitwise:2*self._num_unitwise]
+
+        # Diagonal connections
+        batch_size = tf.shape(inputs)[0]
+
+        r = tf.concat([rt_, rs_], axis=-1)
+        z = tf.concat([zt_, zs_], axis=-1)
+
+        r = tf.sigmoid(tf.roll(r, self.roll, [-1]) + _INIT)
+        z = tf.sigmoid(tf.roll(z, self.roll, [-1]) + _INIT)
+
+        scale_concat = tf.concat([inputs, r*m_prev], 1)
+
+        ot_ = tf.matmul(
+            scale_concat, self._dummy_kernel[:, 2*self._num_unitwise:3*self._num_unitwise]) \
+              + self._dummy_bias[2*self._num_unitwise:3*self._num_unitwise]
+        os_ = sparse_matmul(scale_concat, self.sample_inds[1])
+
+        o = tf.concat([ot_, os_], axis=-1)
+        o = tf.tanh(tf.roll(o, self.roll, [-1]) + _INIT)
+
+        m = (1-z)*m_prev + z*o
+
+        new_state = m
+
+        if return_prev:
+            return m, new_state, m_prev, m
+        else:
+            return m, new_state
+
+class SparseDummyLSTMCell(object):
+    def __init__(self, num_units, input_depth, seed=None,
+                 init_data=None, num_unitwise=None, state_is_tuple=False,
+                 forget_bias=1.0, activation=None, dtype=None, sample_inds=None, peephole=False):
+        self._num_units = num_units
+        self._forget_bias = forget_bias
+        self._seed = seed
+        self.dtype = dtype
+
+        nj = 1 + int(peephole)
+        if activation:
+            self._activation = get_activation_func(activation)
+        else:
+            self._activation = tf.tanh
+
+        self._input_size = input_depth
+        self._num_unitwise = num_unitwise if num_unitwise is not None else 1
+
+        self._dummy_kernel = tf.placeholder(
+            shape=[input_depth + nj * self._num_units, 4 * self._num_unitwise], dtype=tf.float32
         )
         self._dummy_bias = tf.zeros(
             shape=[4 * self._num_unitwise], dtype=tf.float32
@@ -216,66 +431,57 @@ class SparseDummyLSTMCell(object):
 
         self.output_size = num_units
         self.state_size = 2*num_units
+        self.sample_inds = sample_inds
+        self.peephole = peephole
 
     def zero_state(self, batch_size, dtype):
         return tf.zeros(
-            tf.stack([batch_size, tf.constant(self.state_size)]),
+            [batch_size, tf.constant(self.state_size)],
             dtype=dtype)
 
-    def __call__(self, inputs, state):
-        num_proj = self._num_units
+    def __call__(self, inputs, state, return_prev = False):
+        c_prev, m_prev = tf.split(state, [self._num_units, self._num_units], axis=1)
 
-        c_prev = tf.slice(state, [0, 0], [-1, self._num_units])
-        m_prev = tf.slice(state, [0, self._num_units], [-1, num_proj])
+        if self.peephole:
+            concat = tf.concat([inputs, state], 1)
+        else:
+            concat = tf.concat([inputs, m_prev], 1)
+        sample_out = sparse_matmul(concat, self.sample_inds)
+        is_, js_, fs_, os_ = tf.split(sample_out, [self._num_units-self._num_unitwise]*4, axis=1)
 
         input_size = inputs.get_shape().with_rank(2)[1]
         if input_size.value is None:
             raise ValueError("Could not infer input size from inputs.get_shape()[-1]")
 
         # i = input_gate, j = new_input, f = forget_gate, o = output_gate
-        i = tf.matmul(
-            tf.concat([inputs, m_prev], 1),
-            self._dummy_kernel[:, :self._num_unitwise]) \
+        it_ = tf.matmul(
+            concat, self._dummy_kernel[:, :self._num_unitwise]) \
             + self._dummy_bias[:self._num_unitwise]
 
-        j = tf.matmul(
-            tf.concat([inputs, m_prev], 1),
-            self._dummy_kernel[:, self._num_unitwise:2 * self._num_unitwise]) \
+        jt_ = tf.matmul(
+            concat, self._dummy_kernel[:, self._num_unitwise:2 * self._num_unitwise]) \
             + self._dummy_bias[self._num_unitwise:2 * self._num_unitwise]
 
-        f = tf.matmul(
-            tf.concat([inputs, m_prev], 1),
-            self._dummy_kernel[:, 2 * self._num_unitwise:3 * self._num_unitwise]) \
+        ft_ = tf.matmul(
+            concat, self._dummy_kernel[:, 2 * self._num_unitwise:3 * self._num_unitwise]) \
             + self._dummy_bias[2 * self._num_unitwise:3 * self._num_unitwise]
 
-        o = tf.matmul(
-            tf.concat([inputs, m_prev], 1),
-            self._dummy_kernel[:, 3 * self._num_unitwise:]) \
+        ot_ = tf.matmul(
+            concat, self._dummy_kernel[:, 3 * self._num_unitwise:]) \
             + self._dummy_bias[3 * self._num_unitwise:]
 
         # Diagonal connections
         batch_size = tf.shape(inputs)[0]
-        random_shape = tf.stack([batch_size, tf.constant(self._num_units - self._num_unitwise)])
 
-        stddev_f = tf.nn.moments(f, axes=[0,1])[1]
-        stddev_i = tf.nn.moments(i, axes=[0,1])[1]
-        stddev_j = tf.nn.moments(j, axes=[0,1])[1]
-        stddev_o = tf.nn.moments(o,axes=[0,1])[1]
+        i = tf.concat([it_, is_], axis=-1)
+        j = tf.concat([jt_, js_], axis=-1)
+        o = tf.concat([ot_, os_], axis=-1)
+        f = tf.concat([ft_, fs_], axis=-1)
 
-        random_f = tf.random.normal(random_shape, 0, stddev_f)
-        random_i = tf.random.normal(random_shape, 0, stddev_i)
-        random_j = tf.random.normal(random_shape, 0, stddev_j)
-        random_o = tf.random.normal(random_shape, 0, stddev_o)
-
-        i = tf.concat([i, random_i], axis=-1)
-        j = tf.concat([j, random_j], axis=-1)
-        o = tf.concat([o, random_o], axis=-1)
-        f = tf.concat([f, random_f], axis=-1)
-
-        i = tf.roll(i, self.roll, [-1])
-        j = tf.roll(j, self.roll, [-1])
-        o = tf.roll(o, self.roll, [-1])
-        f = tf.roll(f, self.roll, [-1])
+        i = tf.roll(i, self.roll, [-1]) + _INIT
+        j = tf.roll(j, self.roll, [-1]) + _INIT
+        o = tf.roll(o, self.roll, [-1]) + _INIT
+        f = tf.roll(f, self.roll, [-1]) + _INIT
 
         c = (tf.sigmoid(f + self._forget_bias) * c_prev + tf.sigmoid(i) *
              self._activation(j))
@@ -283,16 +489,19 @@ class SparseDummyLSTMCell(object):
         m = tf.sigmoid(o) * self._activation(c)
 
         new_state = tf.concat([c, m], 1)
-        return m, new_state
 
-class SparseDummyGRUCell(object):
-    def __init__(self, params):
-        pass
+        if return_prev:
+            if self.peephole:
+                return m, new_state, state, new_state # not c, as then o-gate is ignored
 
-    def __call__(self, input):
-        pass
+            else:
+                return m, new_state, m_prev, m
 
-class SparseLSTMCell(object):
+        else:
+            return m, new_state
+
+
+class SparseBasicCell(object):
 
     def __init__(self, num_units, sparse_list, forget_bias=1.0,
                  input_depth=None, state_is_tuple=False, activation='tanh',
@@ -314,28 +523,101 @@ class SparseLSTMCell(object):
         self._activation = get_activation_func(activation)
         self._use_sparse_mul = use_sparse_mul
 
+        h = split_indices(sparse_list, num_units, 1, axis=1)[0]
+
+        with tf.variable_scope(self._scope):
+            with tf.device("/cpu:0"):
+
+                print(h)
+                # no need to shard sparse matrix
+                self.wh, wh = get_sparse_sharded_weight_matrix(
+                    [input_depth+num_units, num_units],
+                    h, name='sparse_h', num_shards=1, dtype=tf.float32
+                )
+
+                initializer = tf.zeros_initializer
+                self.bh = tf.get_variable(
+                    name='bh', shape=[self._num_units], initializer=initializer
+                )
+
+        self.var = [wh]
+        '''
+        self.initialize_op = tf.initialize_variables([self.bi, self.bj, self.bf, self.bo, wi, wj, wf, wo])
+        '''
+        self.output_size = num_units
+        self.state_size = num_units
+
+    def zero_state(self, batch_size, dtype):
+        return tf.zeros(
+            tf.stack([batch_size, tf.constant(self.state_size)]),
+            dtype=dtype)
+
+    @property
+    def sparsity(self):
+        return self._sparsity
+
+    def __call__(self, inputs, state, scope=None, return_prev=False):
+        """Long short-term memory cell (LSTM)."""
+        with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
+            # Parameters of gates are concatenated into one multiply for efficiency.
+            h = sparse_matmul([inputs, state], self.wh) + self.bh
+
+            new_h = h
+            new_state = h
+
+            if return_prev:
+                return new_h, new_state, state, new_h
+            else:
+                return new_h, new_state
+
+class SparseLSTMCell(object):
+
+    def __init__(self, num_units, sparse_list, forget_bias=1.0,
+                 input_depth=None, state_is_tuple=False, activation='tanh',
+                 use_sparse_mul=False, scope=None, seed=None, num_shards=1,
+                 peephole=False):
+        """Initialize the basic LSTM cell.
+        Args:
+          num_units: int, The number of units in the LSTM cell.
+          forget_bias: float, The bias added to forget gates (see above).
+          input_size: Deprecated and unused.
+          state_is_tuple: If True, accepted and returned states are 2-tuples of
+            the `c_state` and `m_state`.  If False, they are concatenated
+            along the column axis.  The latter behavior will soon be deprecated.
+          activation: Activation function of the inner states.
+        """
+        self._forget_bias = forget_bias
+        self._scope = scope or 'sparse_lstm'
+        self._num_units = num_units
+        self._state_is_tuple = state_is_tuple
+        self._activation = get_activation_func(activation)
+        self._use_sparse_mul = use_sparse_mul
+
         i,j,f,o = split_indices(sparse_list, num_units, 4, axis=1)
+        self.peephole = peephole
+
+        nj = 1 + int(self.peephole)
 
         with tf.variable_scope(self._scope):
             with tf.device("/cpu:0"):
                 # no need to shard sparse matrix
                 self.wi, wi = get_sparse_sharded_weight_matrix(
-                    [input_depth+num_units, num_units],
+                    [input_depth+nj*num_units, num_units],
                     i, name='sparse_i', num_shards=1, dtype=tf.float32
                 )
 
                 self.wj, wj = get_sparse_sharded_weight_matrix(
-                    [input_depth+num_units, num_units],
+                    [input_depth+nj*num_units, num_units],
                     j, name='sparse_j', num_shards=1, dtype=tf.float32
                 )
 
                 self.wf, wf = get_sparse_sharded_weight_matrix(
-                    [input_depth + num_units, num_units],
+                    [input_depth + nj*num_units, num_units],
                     f, name='sparse_f', num_shards=1, dtype=tf.float32
                 )
 
                 self.wo, wo = get_sparse_sharded_weight_matrix(
-                    [input_depth + num_units, num_units],
+                    [input_depth + nj*num_units, num_units],
                     o, name='sparse_o', num_shards=1, dtype=tf.float32
                 )
 
@@ -353,7 +635,7 @@ class SparseLSTMCell(object):
                     name='bo', shape=[self._num_units], initializer=initializer
                 )
 
-        self.var = [self.bi, self.bj, self.bf, self.bo, wi, wj, wf, wo]
+        self.var = [wi, wj, wf, wo]
         '''
         self.initialize_op = tf.initialize_variables([self.bi, self.bj, self.bf, self.bo, wi, wj, wf, wo])
         '''
@@ -369,7 +651,7 @@ class SparseLSTMCell(object):
     def sparsity(self):
         return self._sparsity
 
-    def __call__(self, inputs, state, scope=None):
+    def __call__(self, inputs, state, scope=None, return_prev=False):
         """Long short-term memory cell (LSTM)."""
         with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
             # Parameters of gates are concatenated into one multiply for efficiency.
@@ -378,11 +660,17 @@ class SparseLSTMCell(object):
             else:
                 c, h = tf.split(state, 2, 1)
             # concat = _linear([inputs, h], 4 * self._num_units, True)
+            if self.peephole:
+                i = sparse_matmul([inputs, state], self.wi) + self.bi
+                j = sparse_matmul([inputs, state], self.wj) + self.bj
+                f = sparse_matmul([inputs, state], self.wf) + self.bf
+                o = sparse_matmul([inputs, state], self.wo) + self.bo
 
-            i = sparse_matmul([inputs, h], self.wi) + self.bi
-            j = sparse_matmul([inputs, h], self.wj) + self.bj
-            f = sparse_matmul([inputs, h], self.wf) + self.bf
-            o = sparse_matmul([inputs, h], self.wo) + self.bo
+            else:
+                i = sparse_matmul([inputs, h], self.wi) + self.bi
+                j = sparse_matmul([inputs, h], self.wj) + self.bj
+                f = sparse_matmul([inputs, h], self.wf) + self.bf
+                o = sparse_matmul([inputs, h], self.wo) + self.bo
 
             new_c = (c * tf.sigmoid(f + self._forget_bias) + tf.sigmoid(i) *
                      self._activation(j))
@@ -392,7 +680,268 @@ class SparseLSTMCell(object):
                 raise NotImplementedError
             else:
                 new_state = tf.concat([new_c, new_h], 1)
-            return new_h, new_state
+
+            if return_prev:
+                if self.peephole:
+                    return new_h, new_state, state, new_state
+                else:
+                    return new_h, new_state, h, new_h
+            else:
+                return new_h, new_state
+
+class MaskLSTMCell(object):
+    def __init__(self, num_units, sparse_list, forget_bias=1.0,
+                 input_depth=None, state_is_tuple=False, activation='tanh',
+                 use_sparse_mul=False, scope=None, seed=None, num_shards=1,
+                 peephole=False):
+        """Initialize the basic LSTM cell.
+        Args:
+          num_units: int, The number of units in the LSTM cell.
+          forget_bias: float, The bias added to forget gates (see above).
+          input_size: Deprecated and unused.
+          state_is_tuple: If True, accepted and returned states are 2-tuples of
+            the `c_state` and `m_state`.  If False, they are concatenated
+            along the column axis.  The latter behavior will soon be deprecated.
+          activation: Activation function of the inner states.
+        """
+        self._forget_bias = forget_bias
+        self._scope = scope or 'sparse_lstm'
+        self._num_units = num_units
+        self._state_is_tuple = state_is_tuple
+        self._activation = get_activation_func(activation)
+        self._use_sparse_mul = use_sparse_mul
+
+        self.w = tf.Variable(sparse_list, dtype=tf.float32, trainable=True)
+        self.m = tf.placeholder(shape=sparse_list.shape, dtype=tf.float32)
+
+        self.wc = self.w * self.m
+        self.peephole = peephole
+
+        nj = 1 + int(self.peephole)
+        with tf.variable_scope(self._scope):
+            with tf.device("/cpu:0"):
+                initializer = tf.zeros_initializer
+                self.bi = tf.get_variable(
+                    name='bi', shape=[self._num_units], initializer=initializer
+                )
+                self.bj = tf.get_variable(
+                    name='bj', shape=[self._num_units], initializer=initializer
+                )
+                self.bf = tf.get_variable(
+                    name='bf', shape=[self._num_units], initializer=initializer
+                )
+                self.bo = tf.get_variable(
+                    name='bo', shape=[self._num_units], initializer=initializer
+                )
+
+        self.var = [self.w]
+        self.placeholder = [self.m]
+        '''
+        self.initialize_op = tf.initialize_variables([self.bi, self.bj, self.bf, self.bo, wi, wj, wf, wo])
+        '''
+        self.output_size = num_units
+        self.state_size = 2 * num_units
+
+    def zero_state(self, batch_size, dtype):
+        return tf.zeros(
+            tf.stack([batch_size, tf.constant(self.state_size)]),
+            dtype=dtype)
+
+    @property
+    def sparsity(self):
+        return self._sparsity
+
+    def __call__(self, inputs, state, scope=None, return_prev=False):
+        """Long short-term memory cell (LSTM)."""
+        with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
+            # Parameters of gates are concatenated into one multiply for efficiency.
+            if self._state_is_tuple:
+                raise NotImplementedError
+            else:
+                c, h = tf.split(state, 2, 1)
+            # concat = _linear([inputs, h], 4 * self._num_units, True)
+            if self.peephole:
+                concat = tf.concat([inputs, state], axis=-1)
+                out = tf.matmul(concat, tf.transpose(self.wc))
+                i,j,f,o = tf.split(out, 4, axis=-1)
+
+            else:
+                concat = tf.concat([inputs, h], axis=-1)
+                out = tf.matmul(concat, tf.transpose(self.wc))
+                i,j,f,o = tf.split(out, 4, axis=-1)
+
+            new_c = (c * tf.sigmoid(f + self._forget_bias) + tf.sigmoid(i) *
+                     self._activation(j))
+            new_h = self._activation(new_c) * tf.sigmoid(o)
+
+            if self._state_is_tuple:
+                raise NotImplementedError
+            else:
+                new_state = tf.concat([new_c, new_h], 1)
+
+            if return_prev:
+                if self.peephole:
+                    return new_h, new_state, state, new_state
+                else:
+                    return new_h, new_state, h, new_h
+            else:
+                return new_h, new_state
+
+class MaskGRUCell(object):
+
+    def __init__(self, num_units, sparse_list, forget_bias=1.0,
+                 input_depth=None, state_is_tuple=False, activation='tanh',
+                 use_sparse_mul=False, scope=None, seed=None, num_shards=1):
+        """Initialize the basic LSTM cell.
+        Args:
+          num_units: int, The number of units in the LSTM cell.
+          forget_bias: float, The bias added to forget gates (see above).
+          input_size: Deprecated and unused.
+          state_is_tuple: If True, accepted and returned states are 2-tuples of
+            the `c_state` and `m_state`.  If False, they are concatenated
+            along the column axis.  The latter behavior will soon be deprecated.
+          activation: Activation function of the inner states.
+        """
+        self._forget_bias = forget_bias
+        self._scope = scope or 'sparse_lstm'
+        self._num_units = num_units
+        self._state_is_tuple = state_is_tuple
+        self._activation = get_activation_func(activation)
+        self._use_sparse_mul = use_sparse_mul
+
+        self.w = tf.Variable(sparse_list, dtype=tf.float32, trainable=True)
+        self.m = tf.placeholder(shape=sparse_list.shape, dtype=tf.float32)
+
+        self.wc = self.w * self.m
+        self.wi, self.wo = tf.split(self.wc, [2*num_units, num_units], axis=0)
+
+        with tf.variable_scope(self._scope):
+            with tf.device("/cpu:0"):
+                initializer = tf.zeros_initializer
+                self.bi = tf.get_variable(
+                    name='bz', shape=[2*self._num_units], initializer=initializer
+                )
+                self.bo = tf.get_variable(
+                    name='bo', shape=[self._num_units], initializer=initializer
+                )
+
+        self.var = [self.w]
+        self.placeholder = [self.m]
+        '''
+        self.initialize_op = tf.initialize_variables([self.bi, self.bj, self.bf, self.bo, wi, wj, wf, wo])
+        '''
+        self.output_size = num_units
+        self.state_size = num_units
+
+    def zero_state(self, batch_size, dtype):
+        return tf.zeros(
+            tf.stack([batch_size, tf.constant(self.state_size)]),
+            dtype=dtype)
+
+    @property
+    def sparsity(self):
+        return self._sparsity
+
+    def __call__(self, inputs, state, scope=None, return_prev=False):
+        """Long short-term memory cell (LSTM)."""
+        with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
+            concat = tf.concat([inputs, state], axis=-1)
+            temp = tf.sigmoid(tf.matmul(concat, tf.transpose(self.wi)) + self.bi)
+            z,r = tf.split(temp, 2, axis=-1)
+
+            v = state * r
+            concat2 = tf.concat([inputs, v], axis=-1)
+            o = tf.tanh(tf.matmul(concat2, tf.transpose(self.wo)) + self.bo)
+
+            new_state = (1-z)*state + z*o
+            if return_prev:
+                return new_state, new_state, state, new_state
+            else:
+                return new_state, new_state
+
+class SparseGRUCell(object):
+
+    def __init__(self, num_units, sparse_list, forget_bias=1.0,
+                 input_depth=None, state_is_tuple=False, activation='tanh',
+                 use_sparse_mul=False, scope=None, seed=None, num_shards=1):
+        """Initialize the basic LSTM cell.
+        Args:
+          num_units: int, The number of units in the LSTM cell.
+          forget_bias: float, The bias added to forget gates (see above).
+          input_size: Deprecated and unused.
+          state_is_tuple: If True, accepted and returned states are 2-tuples of
+            the `c_state` and `m_state`.  If False, they are concatenated
+            along the column axis.  The latter behavior will soon be deprecated.
+          activation: Activation function of the inner states.
+        """
+        self._forget_bias = forget_bias
+        self._scope = scope or 'sparse_lstm'
+        self._num_units = num_units
+        self._state_is_tuple = state_is_tuple
+        self._activation = get_activation_func(activation)
+        self._use_sparse_mul = use_sparse_mul
+
+        r,z,o = split_indices(sparse_list, num_units, 3, axis=1)
+
+        with tf.variable_scope(self._scope):
+            with tf.device("/cpu:0"):
+                # no need to shard sparse matrix
+                self.wr, wr = get_sparse_sharded_weight_matrix(
+                    [input_depth+num_units, num_units],
+                    r, name='sparse_r', num_shards=1, dtype=tf.float32
+                )
+
+                self.wz, wz = get_sparse_sharded_weight_matrix(
+                    [input_depth+num_units, num_units],
+                    z, name='sparse_z', num_shards=1, dtype=tf.float32
+                )
+
+                self.wo, wo = get_sparse_sharded_weight_matrix(
+                    [input_depth + num_units, num_units],
+                    o, name='sparse_o', num_shards=1, dtype=tf.float32
+                )
+
+                initializer = tf.zeros_initializer
+                self.br = tf.get_variable(
+                    name='br', shape=[self._num_units], initializer=initializer
+                )
+                self.bz = tf.get_variable(
+                    name='bz', shape=[self._num_units], initializer=initializer
+                )
+                self.bo = tf.get_variable(
+                    name='bo', shape=[self._num_units], initializer=initializer
+                )
+
+        self.var = [wr, wz, wo]
+        '''
+        self.initialize_op = tf.initialize_variables([self.bi, self.bj, self.bf, self.bo, wi, wj, wf, wo])
+        '''
+        self.output_size = num_units
+        self.state_size = num_units
+
+    def zero_state(self, batch_size, dtype):
+        return tf.zeros(
+            tf.stack([batch_size, tf.constant(self.state_size)]),
+            dtype=dtype)
+
+    @property
+    def sparsity(self):
+        return self._sparsity
+
+    def __call__(self, inputs, state, scope=None, return_prev=False):
+        """Long short-term memory cell (LSTM)."""
+        with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
+            r = tf.sigmoid(sparse_matmul([inputs, state], self.wr) + self.br)
+            z = tf.sigmoid(sparse_matmul([inputs, state], self.wo) + self.bo)
+
+            v = state * r
+            o = tf.tanh(sparse_matmul([inputs, v], self.wz) + self.bz)
+
+            new_state = (1-z)*state + z*o
+            if return_prev:
+                return new_state, new_state, state, new_state
+            else:
+                return new_state, new_state
 
 def dummy_step(cell, _input, _state, _output_tensor, _i):
     _output, _next_state = cell.call(_input[:, _i], _state[:, _i])
@@ -416,7 +965,8 @@ class SparseDummyRecurrentNetwork(object):
     def __init__(self, scope, activation_type,
                  normalizer_type, recurrent_cell_type,
                  train, hidden_size, input_depth, reuse=True,
-                 num_unitwise=None, swap_memory=True, seed=12345, num_shards=1):
+                 num_unitwise=None, swap_memory=True, seed=12345, num_shards=1,
+                 max_length=None):
         self._scope = scope
         self._use_lstm = True if 'lstm' in recurrent_cell_type else False
         _cell_proto, _cell_kwargs = get_dummy_rnn_cell(recurrent_cell_type)
@@ -425,34 +975,55 @@ class SparseDummyRecurrentNetwork(object):
         self._train = train
         self._reuse = reuse
         self._hidden_size = hidden_size
+        self._num_unitwise = num_unitwise
+        self._input_depth = input_depth
         self.swap_memory = True
+
+        if 'gru' in recurrent_cell_type:
+            self.sample_inds = [tf.sparse_placeholder(dtype=tf.float32)]*2
+        else:
+            self.sample_inds = tf.sparse_placeholder(dtype=tf.float32)
 
         with tf.variable_scope(scope):
             self._cell = _cell_proto(hidden_size, **_cell_kwargs, input_depth=input_depth,
-                seed=seed, num_unitwise=num_unitwise)
+                seed=seed, num_unitwise=num_unitwise, sample_inds=self.sample_inds)
             self.roll = self._cell.roll
 
-    def __call__(self, input_tensor, hidden_states=None):
+
+        self.var = (self._cell._dummy_kernel)
+        self.placeholder = (self._cell._dummy_kernel, self._cell.roll, self.sample_inds)
+
+    def __call__(self, input_tensor, hidden_states=None, return_rnn=False):
         with tf.variable_scope(self._scope, reuse=self._reuse):
-            _rnn_outputs, _rnn_states = tf.nn.dynamic_rnn(
-                self._cell, input_tensor,
-                initial_state=hidden_states,
-                dtype=tf.float32,
-                swap_memory=True
-            )
+            _rnn_states = []
+            _rnn_outputs = []
+            if return_rnn:
+                _rnn_new = []
 
-            if self._activation_type is not None:
-                act_func = \
-                    get_activation_func(self._activation_type)
-                _rnn_outputs = \
-                    act_func(_rnn_outputs, name='activation_0')
+            if hidden_states is not None:
+                state = hidden_states
+            else:
+                zeros = tf.zeros([self._input_depth, self._cell.state_size], dtype=tf.float32)
+                state = tf.einsum('ij,jk->ik', tf.zeros_like(input_tensor[:,0,:]), zeros)
 
-            if self._normalization_type is not None:
-                normalizer = get_normalizer(self._normalization_type,
-                                            train=self._train)
-                _rnn_outputs = \
-                    normalizer(_rnn_outputs, 'normalizer_0')
-        return _rnn_outputs, _rnn_states
+            t_step = input_tensor.get_shape().as_list()[1]
+            for i in range(t_step):
+                if return_rnn:
+                    out, state, _, new = \
+                        self._cell(input_tensor[:,i,:], state, return_prev=True)
+                    _rnn_new.append(new)
+                else:
+                    out, state = \
+                        self._cell(input_tensor[:,i,:], state)
+
+                _rnn_outputs.append(out)
+                _rnn_states.append(state)
+
+        if return_rnn:
+            return _rnn_outputs, _rnn_states, _rnn_new
+        else:
+            return _rnn_outputs, _rnn_states
+
 
     @property
     def weight(self):
@@ -490,7 +1061,8 @@ class SparseRecurrentNetwork(object):
     def __init__(self, scope, activation_type,
                  normalizer_type, recurrent_cell_type, sparse_list,
                  train, hidden_size, input_depth, seed=12345,
-                 dtype=tf.float32, swap_memory=True, reuse=None, num_shards=1):
+                 dtype=tf.float32, swap_memory=True, reuse=None, num_shards=1,
+                 **kwargs):
         self._scope = scope
         self._use_lstm = True if 'lstm' in recurrent_cell_type else False
         _cell_proto, _cell_kwargs = get_sparse_rnn_cell(recurrent_cell_type)
@@ -511,167 +1083,44 @@ class SparseRecurrentNetwork(object):
         '''
         self.swap_memory = bool(swap_memory)
 
-    def __call__(self, input_tensor, hidden_states=None):
+    def __call__(self, input_tensor, hidden_states=None, return_rnn=False, return_prev=False):
         with tf.variable_scope(self._scope, reuse=self._reuse):
-            _rnn_outputs, _rnn_states = tf.nn.dynamic_rnn(
-                self._cell, input_tensor,
-                initial_state=hidden_states,
-                dtype=tf.float32,
-                swap_memory=True
-            )
 
-            if self._activation_type is not None:
-                act_func = \
-                    get_activation_func(self._activation_type)
-                _rnn_outputs = \
-                    act_func(_rnn_outputs, name='activation_0')
+            if return_rnn:
 
-            if self._normalization_type is not None:
-                normalizer = get_normalizer(self._normalization_type,
-                                            train=self._train)
-                _rnn_outputs = \
-                    normalizer(_rnn_outputs, 'normalizer_0')
-        return _rnn_outputs, _rnn_states
+                nt = input_tensor.get_shape().as_list()[1]
+                seq = list(tf.split(input_tensor, nt, axis=1))
+
+                seq = [tf.reduce_sum(v, axis=1) for v in seq]
+
+                _rnn_outputs, _rnn_states, _, _rnn_h = static_rnn(
+                    self._cell, seq,
+                    hidden_states,
+                    dtype=tf.float32,
+                    return_rnn=True
+                    #swap_memory=True
+                )
+
+                _rnn_outputs = tf.transpose(tf.stack(_rnn_outputs), [1, 0, 2])
+
+            else:
+                _rnn_outputs, _rnn_states = tf.nn.dynamic_rnn(
+                    self._cell, input_tensor,
+                    initial_state=hidden_states,
+                    dtype=tf.float32,
+                    #swap_memory=True
+                )
+
+        if return_rnn:
+            return _rnn_outputs, _rnn_states, _rnn_h
+        else:
+            return _rnn_outputs, _rnn_states
 
 class SparseDummyFullyConnected(object):
-    def __init__(self, input_depth, hidden_size, scope,
-                 activation_type, normalizer_type, seed=1,
-                 num_unitwise=None, train=True, use_bias=True, num_shards=1,
-                 **kwargs):
-
-        self._scope = scope
-        self.input_depth = input_depth
-        self.hidden_size = hidden_size
-        self.num_unitwise = num_unitwise
-
-        self.use_bias = use_bias
-        self.seed = seed
-
-        with tf.variable_scope(self._scope):
-            self.weight = tf.placeholder(shape=[input_depth, num_unitwise], dtype=tf.float32)
-            if use_bias:
-                self._b = tf.zeros(shape=[hidden_size], dtype=tf.float32)
-
-            self.roll = tf.placeholder_with_default(tf.zeros([1], dtype=tf.int32), [1])
-        print("Sparse:{}".format(self._scope))
-
-        self._train = train
-
-        self._activation_type = activation_type
-        self._normalizer_type = normalizer_type
-
-    def __call__(self, input_vec):
-        output_shape = tf.shape(input_vec)
-        flat_input = tf.reshape(input_vec,
-            tf.concat([[-1], [output_shape[-1]]], axis=0)
-        )
-
-        with tf.variable_scope(self._scope):
-            res = tf.matmul(flat_input, self.weight)
-            batch_size = tf.shape(flat_input)[0]
-            random_shape = tf.stack([batch_size,
-                tf.constant(self.hidden_size - self.num_unitwise)])
-
-            stddev = tf.nn.moments(res, axes=[0,1])[0]
-
-            random_res = tf.random.normal(random_shape, 0, stddev)
-            res = tf.concat([res, random_res], axis=1)
-
-            res = tf.roll(res, self.roll, [-1])
-            if self.use_bias:
-                res += self._b
-
-            if self._activation_type is not None:
-                act_func = \
-                    get_activation_func(self._activation_type)
-                res = \
-                    act_func(res, name='activation')
-
-            if self._normalizer_type is not None:
-                normalizer = get_normalizer(self._normalizer_type,
-                    train=self._train)
-                res = \
-                    normalizer(res, 'normalizer')
-
-        return tf.reshape(res,
-            tf.concat([output_shape[:-1], tf.constant([self.hidden_size])], axis=0)
-        )
-
-    def sample(self, input):
-        output_shape = tf.shape(input)
-
-        sample = tf.random.normal(stddev=0.1,
-            shape=tf.concat([output_shape[:-1],
-                tf.constant([self.hidden_size])], axis=0))
-
-        if self._activation_type is not None:
-            act_func = \
-                get_activation_func(self._activation_type)
-            sample = \
-                act_func(sample, name='activation')
-
-        if self._normalizer_type is not None:
-            normalizer = get_normalizer(self._normalizer_type,
-                                        train=self._train)
-            sample = \
-                normalizer(sample, 'normalizer')
-
-        return sample
+    pass # in Sparse_FF
 
 class SparseFullyConnected(object):
-
-    def __init__(self, input_depth, hidden_size, scope,
-                 activation_type, normalizer_type, sparse_list,
-                 train=True, use_bias=True, num_shards=1, **kwargs):
-
-        self._scope = scope
-        self.input_depth = input_depth
-        self.use_bias = use_bias
-        self.hidden_size = hidden_size
-
-        with tf.variable_scope(self._scope):
-            self.weight, var = get_sparse_sharded_weight_matrix([input_depth, hidden_size],
-                sparse_list, out_type='sparse', dtype=tf.float32, name='', num_shards=num_shards)
-            if use_bias:
-                self._b = tf.Variable(tf.zeros(shape=[hidden_size], dtype=tf.float32))
-        self._train = train
-        print('Sparse:{}'.format(self._scope))
-
-        self._activation_type = activation_type
-        self._normalizer_type = normalizer_type
-        '''if use_bias:
-            self.initialize_op = tf.initialize_variables([self._b, *var])
-        else:
-            self.initialize_op = tf.initialize_variables([*var])
-        '''
-        self.var = [self._b, *var]
-
-    def __call__(self, input_vec):
-        output_shape = tf.shape(input_vec)
-        flat_input = tf.reshape(input_vec,
-            tf.concat([[-1], [output_shape[-1]]], axis=0)
-        )
-
-        with tf.variable_scope(self._scope):
-            res = sparse_matmul(flat_input, self.weight)
-            if self.use_bias:
-                res += self._b
-
-            if self._activation_type is not None:
-                act_func = \
-                    get_activation_func(self._activation_type)
-                res = \
-                    act_func(res, name='activation')
-
-            if self._normalizer_type is not None:
-                normalizer = get_normalizer(self._normalizer_type,
-                    train=self._train)
-                res = \
-                    normalizer(res, 'normalizer')
-
-        return tf.reshape(res,
-            tf.concat([output_shape[:-1], tf.constant([self.hidden_size])], axis=0)
-        )
+    pass
 
 class SparseDummyEmbedding(object):
 
@@ -742,7 +1191,6 @@ class DenseFullyConnected(object):
         self.hidden_size = hidden_size
 
         with tf.variable_scope(self._scope):
-            print("Num_Shards", num_shards)
             if num_shards > 1:
                 weight = weight.T if transpose_weight else weight
                 self.weight, v = get_concat_variable(weight, weight.shape,
@@ -760,7 +1208,7 @@ class DenseFullyConnected(object):
         '''
         self.initialize_op = tf.initialize_variables([self.b, *v])
         '''
-        self.var = [self.b, *v]
+        self.var = [*v]
 
     def __call__(self, input_vec):
         output_shape = tf.shape(input_vec)
@@ -789,7 +1237,7 @@ class DenseFullyConnected(object):
 
 class DenseEmbedding(object):
     def __init__(self, input_depth, hidden_size, scope,
-        weight, seed=1):
+        weight, seed=1, trainable=True):
 
         self._scope = scope
         self.input_depth = input_depth
@@ -797,11 +1245,11 @@ class DenseEmbedding(object):
         self.seed = seed
 
         with tf.variable_scope(self._scope):
-            self.weight, v = get_mask(weight)
+            self.weight = tf.Variable(weight, dtype=tf.float32, trainable=trainable)
         '''
         self.initialize_op = tf.initialize_variables([v])
         '''
-        self.var = [v]
+        self.var = [self.weight]
 
     def __call__(self, input_vec):
         output_shape = tf.shape(input_vec)
@@ -820,7 +1268,7 @@ class DenseRecurrentNetwork(object):
                  dtype=tf.float32, reuse=None, num_shards=1):
         self._scope = scope
         self._use_lstm = True if 'lstm' in recurrent_cell_type else False
-        _cell_proto, _cell_kwargs = get_dense_rnn_cell(recurrent_cell_type)
+        _cell_proto, _cell_kwargs = get_mask_rnn_cell(recurrent_cell_type)
         self._activation_type = activation_type
         self._normalization_type = normalizer_type
         self._train = train
@@ -829,13 +1277,14 @@ class DenseRecurrentNetwork(object):
 
         with tf.variable_scope(scope):
             self._cell = _cell_proto(hidden_size, **_cell_kwargs,
-                input_depth=input_depth, init_matrix=weight, seed=seed,
+                input_depth=input_depth, sparse_list=weight, seed=seed,
                 num_shards=num_shards)
         '''
         self.initialize_op = self._cell.initialize_op
         '''
 
         self.var = self._cell.var
+        self.mask = self._cell.m
 
     def __call__(self, input_tensor, hidden_states=None):
         with tf.variable_scope(self._scope, reuse=self._reuse):
@@ -902,7 +1351,7 @@ class DenseLSTMCell(object):
                 name='bias', shape=[4 * self._num_units], initializer=tf.zeros_initializer
             )
 
-        self.var = [self.wi, self.wj, self.wf, self.wo, self.bias]
+        self.var = [self.wi, self.wj, self.wf, self.wo]
 
         '''
         self.initialize_op = tf.initialize_variables([self.bias, self.wi, self.wj, self.wf, self.wo])
@@ -992,7 +1441,7 @@ class SparseKNET(object):
 def get_mask(weight):
     mask = np.zeros_like(weight)
     mask_inds = np.nonzero(weight)
-    
+
     mask[mask_inds] = 1
 
     mask = tf.constant(mask, dtype=tf.float32)
@@ -1058,7 +1507,6 @@ def _get_sharded_variable(values, shape, dtype, num_shards, name='', constant=Fa
     return shards
 
 def get_concat_variable(values, shape, dtype, num_shards, **kwargs):
-    print(num_shards)
     """Get a sharded variable concatenated into one tensor."""
     _sharded_variable = _get_sharded_variable(values, shape, dtype, num_shards, **kwargs)
     if len(_sharded_variable) == 1:

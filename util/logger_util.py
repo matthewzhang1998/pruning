@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import sys
 
 def get_dir(base_path):
     path = base_path
@@ -7,6 +8,9 @@ def get_dir(base_path):
     while osp.exists(path):
         ix += 1
         path = base_path + str(ix)
+
+    print(osp.join(os.getcwd() + path))
+    sys.stdout.flush()
 
     os.makedirs(path)
     return path
