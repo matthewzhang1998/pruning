@@ -1,6 +1,7 @@
 import tensorflow as tf
 from model.networks.base_network import *
 from util.sparse_util import *
+from util.dense_util import *
 
 class RNNModel(BaseModel):
     def __init__(self, params, input_size, output_size, seed, init,
@@ -36,7 +37,7 @@ class RNNModel(BaseModel):
                           'normalizer_type': self.params.rnn_r_norm_seq[ii],
                           'recurrent_cell_type': self.params.rnn_cell_type,
                           'train': True, 'scope': 'rnn' + str(ii),
-                          'num_shards': self.params.num_shards,
+                          'num_shards': self.params.num_shards
                           }
 
             self.Network['Params'].append(params)
@@ -95,16 +96,10 @@ class RNNModel(BaseModel):
             self.Network['Net'][-1] = DenseFullyConnected(
                 **self.Network['Params'][-1], weight=softmax
             )
-            if not use_dense:
-                self.Network['Net'][1] = SparseRecurrentNetwork(
-                   **self.Network['Params'][1], sparse_list=lstm,
-                   swap_memory=self.params.rnn_swap_memory
-                )
 
-            else:
-                self.Network['Net'][1] = DenseRecurrentNetwork(
-                   **self.Network['Params'][1], weight=lstm
-                )
+            self.Network['Net'][1] = DenseVRecurrentNetwork(
+               **self.Network['Params'][1], weight=lstm
+            )
 
     def __call__(self, input, return_rnn=False):
 
@@ -133,9 +128,3 @@ class RNNModel(BaseModel):
 
         else:
             return output
-
-    def hessian_variable(self):
-        return self.Network['Net'][1].var
-
-    def placeholders(self):
-        return self.Network['Net'][1].mask

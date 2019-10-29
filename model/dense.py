@@ -1,9 +1,9 @@
 import tensorflow as tf
 import numpy as np
-from model.networks.rnn_regress import *
+from model.networks.rnn_dense import *
 from util.sparse_util import *
 
-class Regress(object):
+class Dense(object):
     def __init__(self, scope, params, input_size, num_classes, seed=1, init=None):
         self.params = params
         self.Snip = {}
@@ -31,34 +31,14 @@ class Regress(object):
         self.Tensor['Cache_Embed'] = embed_mat
         self.Tensor['Cache_Softmax'] = softmax_mat
 
-    def fork_model_lstm(self, weights, row_ind, col_ind, i, use_dense=False):
-        # assume sparse for now
+    def fork_model_lstm(self, i):
+        # assume dense for now
 
-        if use_dense:
-            self.fork_model[i].init_model(scope='reg{}'.format(i),
-                embed = self.Tensor['Cache_Embed'], softmax = self.Tensor['Cache_Softmax'],
-                lstm = weights.T, use_dense=True
-            )
-
-        else:
-            self.fork_model[i].init_model(scope='reg{}'.format(i),
-                embed = self.Tensor['Cache_Embed'], softmax = self.Tensor['Cache_Softmax'],
-                lstm = (weights, np.array([row_ind, col_ind]).T))
-
-    def hessian_variables(self, i):
-        return self.fork_model[i].hessian_variable()
-
-    def placeholders(self, i):
-        return self.fork_model[i].placeholders()
+        self.fork_model[i].init_model(scope='reg{}'.format(i),
+            embed = self.Tensor['Cache_Embed'], softmax = self.Tensor['Cache_Softmax'],
+            lstm = None, use_dense=True
+        )
 
     def run_fork(self, feature, i, return_rnn=False):
         output = self.fork_model[i](feature, return_rnn=return_rnn)
         return output
-
-    def build_full_model(self, lstm_matrix, use_cache_embed=True):
-        if use_cache_embed:
-            self.model.init_model(embed = self.Tensor['Cache_Embed'],
-            softmax = self.Tensor['Cache_Softmax'], lstm = lstm_matrix)
-
-        else:
-            pass
