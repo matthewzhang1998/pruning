@@ -66,10 +66,11 @@ class Vocabulary(object):
 
 class Dataset(object):
 
-    def __init__(self, vocab, file_pattern, deterministic=False):
+    def __init__(self, vocab, file_pattern, deterministic=False, seed=12345):
         self._vocab = vocab
         self._file_pattern = file_pattern
         self._deterministic = deterministic
+        self._seed = seed
 
     def _parse_sentence(self, line):
         s_id = self._vocab.s_id
@@ -79,6 +80,8 @@ class Dataset(object):
         print("Processing file: %s" % file_name)
         with codecs.open(file_name, "r", "utf-8") as f:
             lines = [line.strip() for line in f]
+            random.seed(self._seed)
+
             if not self._deterministic:
                 random.shuffle(lines)
             print("Finished processing!")
@@ -116,6 +119,8 @@ class Dataset(object):
             if not np.any(w):
                 return
 
+            print(vocab_size)
+
             if vocab_size is not None:
                 x = np.clip(x, None, vocab_size-1)
                 y = np.clip(y, None, vocab_size-1)
@@ -139,10 +144,12 @@ class Dataset(object):
         for value in self._iterate(self._sentence_stream(file_stream()), batch_size, num_steps):
             yield value
 
-def load_1b(datadir):
+def load_1b(datadir, deterministic=False, seed=34752):
     vocab = Vocabulary.from_file(osp.join(datadir, "1b_word_vocab.txt"))
-    train_dataset = Dataset(vocab, osp.join(datadir, "training-monolingual.tokenized.shuffled/*"))
+    train_dataset = Dataset(vocab, osp.join(datadir, "training-monolingual.tokenized.shuffled/*"),
+                            deterministic=deterministic, seed=seed)
     val_dataset = Dataset(vocab, osp.join(datadir,
-        "heldout-monolingual.tokenized.shuffled/news.en.heldout-00000-of-00050"))
+        "heldout-monolingual.tokenized.shuffled/news.en.heldout-00000-of-00050"),
+        deterministic=deterministic, seed=seed)
 
     return train_dataset, val_dataset

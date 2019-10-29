@@ -116,14 +116,13 @@ def ptb_producer(raw_data, batch_size, num_steps, name=None):
 
     epoch_size = (batch_len - 1) // num_steps
 
-    ret = []
-    for i in range(epoch_size):
-        x = data[:, i * num_steps:(i+1)*num_steps]
-        y = data[:, i * num_steps+1:(i+1)*num_steps+1]
-        ret.append((x,y))
-    return ret
+    while True:
+        for i in range(epoch_size):
+            x = data[:, i * num_steps:(i+1)*num_steps]
+            y = data[:, i * num_steps+1:(i+1)*num_steps+1]
+            yield x, y
 
-class Dataset(object):
+class PTBDataset(object):
     """The input data."""
     def __init__(self, params, load_path):
         self.batch_size = params.batch_size
