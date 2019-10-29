@@ -12,12 +12,14 @@ def get_base_parser():
 
     parser.add_argument('--decay_iter', type=int, default=1)
 
-    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_steps', type=int, default=13)
-    parser.add_argument('--val_steps', type=int, default=2000)
-    parser.add_argument('--log_steps', type=int, default=2000)
+    parser.add_argument('--val_steps', type=int, default=1000)
 
-    parser.add_argument('--seed', type=int, default=12)
+    parser.add_argument('--val_iter', type=int, default=400)
+    parser.add_argument('--log_steps', type=int, default=1000)
+
+    parser.add_argument('--seed', type=int, default=353)
 
     parser.add_argument('--optimizer_type', type=str, default='adam')
     parser.add_argument('--momentum', type=float, default=0.9)
@@ -28,7 +30,7 @@ def get_base_parser():
     # parser.add_argument('--snip_k', type=float, default=0.99)
     # parser.add_argument('--l2_k', type=float, default=0.99)
     # parser.add_argument('--random_k', type=float, default=0.99)
-    parser.add_argument('--prune_k', type=float, default=0.01)
+    parser.add_argument('--prune_k', type=float, default=0.98)
     parser.add_argument('--block_k', type=float, default=0.01)
 
     parser.add_argument('--log_dir', type=str, default='../log/log')
@@ -66,17 +68,50 @@ def get_base_parser():
     parser.add_argument('--weight_dir', type=str, default=None)
     parser.add_argument('--exp_id', type=str, default='sparse')
 
-    parser.add_argument('--vocab_size', type=int, default=100)
-    parser.add_argument('--num_sample', type=int, default=50)
+    parser.add_argument('--vocab_size', type=int, default=100000)
+    parser.add_argument('--use_sample_softmax', type=int, default=0)
+    parser.add_argument('--num_sample', type=int, default=1000)
 
     parser.add_argument('--num_shards', type=int, default=1)
     parser.add_argument('--num_gpu', type=int, default=1)
-    parser.add_argument('--eval_iter', type=int, default=100)
-    parser.add_argument('--num_generate', type=int, default=30)
+    parser.add_argument('--eval_iter', type=int, default=1)
+    parser.add_argument('--test_iter', type=int, default=10)
+    parser.add_argument('--num_generate', type=int, default=6)
     parser.add_argument('--num_iterate', type=int, default=1000)
     parser.add_argument('--rand_eps', type=int, default=0.2)
+    parser.add_argument('--weight_eps', type=int, default=0.2)
+
+    parser.add_argument('--evolution_lr', type=float, default=0.001)
+    parser.add_argument('--meta_opt_method', type=str, default='convex')
 
     parser.add_argument('--log_memory', type=int, default=0)
+
+    parser.add_argument('--noise_type', type=str, default='replace')
+
+    parser.add_argument('--prune_criteria', type=str, default='jacobian_easy')
+
+    parser.add_argument('--jacobian_horizon', type=int, default=4)
+    parser.add_argument('--horizon_trace', type=float, default=0.9)
+    parser.add_argument('--deterministic', type=int, default=0)
+
+    parser.add_argument('--uniform_by_gate', type=int, default=0)
+    parser.add_argument('--uniform_by_input', type=int, default=0)
+
+    parser.add_argument('--dummy_objective', type=str, default='grad')
+    parser.add_argument('--dummy_batch', type=int, default=100)
+    parser.add_argument('--unroll_dummy', type=int, default=5)
+
+    parser.add_argument('--dataset', type=str, default='seq_mnist')
+    parser.add_argument('--dummy_noise', type=int, default=.1)
+
+    parser.add_argument('--get_jacobian', type=int, default=0)
+    parser.add_argument('--plot_jacobian_iter', type=int, default=1000)
+
+    parser.add_argument('--prune_iter', type=int, default=5000)
+    parser.add_argument('--prune_iter_k_seq', type=str, default='0.8,0.6,0.4,0.2,0.1,0.05,0.02,0.01')
+
+    parser.add_argument('--train_embed', type=int, default=0)
+    parser.add_argument('--plot_jacobian_pre', type=int, default=0)
 
     return parser
 
@@ -91,6 +126,8 @@ def post_process(args):
                 setattr(args, key, [])
             elif 'hidden' in key:
                 setattr(args, key, [int(dim) for dim in getattr(args, key).split(',')])
+            elif 'k' in key:
+                setattr(args, key, [float(dim) for dim in getattr(args, key).split(',')])
             else:
                 setattr(args, key, [str(dim) for dim in getattr(args, key).split(',')])
     return args
